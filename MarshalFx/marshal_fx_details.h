@@ -6,6 +6,18 @@ namespace marshal_fx {
 
 	namespace details {
 
+		template <typename T>
+		struct remove_hat
+		{
+			typedef T type;
+		};
+		template <typename T>
+		struct remove_hat<T^>
+		{
+			typedef T type;
+		};
+		template <typename T> using remove_hat_t = typename remove_hat<T>::type;
+
 		// Determines whether a type is an STL collection. We deem a type to be an STL
 		// collection if it has a nested ::iterator type, and if it's not std::string
 		// or std::wstring.
@@ -20,42 +32,33 @@ namespace marshal_fx {
 
 			static const bool value =
 				(sizeof(test<T>(0)) == sizeof(yes)) &&
-				!std::is_same<std::string, typename std::remove_cv<T>::type>::value &&
-				!std::is_same<std::wstring, typename std::remove_cv<T>::type>::value;
+				!std::is_same<std::string, std::remove_cv_t<T>>::value &&
+				!std::is_same<std::wstring, std::remove_cv_t<T>>::value;
 		};
 
 		// Determines whether a type is a CLR collection. We deem a type to be a CLR
 		// collection if it implements the IEnumerable interface, and if it's not the
 		// System::String type.
 		template <typename T>
-		struct is_clr_collection
+		struct is_clr_collection :
+			public std::integral_constant<
+				bool,
+				std::is_base_of<System::Collections::IEnumerable, remove_hat_t<T>>::value &&
+				!std::is_same<System::String, remove_hat_t<T>>::value
+			>
 		{
-			static const bool value =
-				std::is_base_of<System::Collections::IEnumerable, typename remove_hat<T>::type>::value &&
-				!std::is_same<System::String, typename remove_hat<T>::type>::value;
-			using type = typename std::integral_constant<bool, value>::type;
 		};
 
 		// Determines whether a type is a CLR dictionary. We deem a type to be a CLR
 		// dictionary if it implements the IDictionary interface.
 		template <typename T>
-		struct is_clr_dictionary
+		struct is_clr_dictionary :
+			public std::integral_constant<
+				bool, 
+				std::is_base_of<System::Collections::IDictionary, remove_hat_t<T>>::value
+			>
 		{
-			static const bool value =
-				std::is_base_of<System::Collections::IDictionary, typename remove_hat<T>::type>::value;
 		};
-
-		template <typename T>
-		struct remove_hat
-		{
-			typedef T type;
-		};
-		template <typename T>
-		struct remove_hat<T^>
-		{
-			typedef T type;
-		};
-		template <typename T> using remove_hat_t = typename remove_hat<T>::type;
 
 		struct tag_base {};
 		struct stl_collection_tag : public tag_base {};
@@ -140,6 +143,8 @@ namespace marshal_fx {
 			static TTo marshal(TFrom const& from, clr_collection_tag, tag_base)
 			{
 				TTo result;
+				// Using the Microsoft-specific syntax here for enumerating an IEnumerable,
+				// as opposed for the standard C++ "for (... : ...)".
 				for each (auto element in from)
 				{
 					result.insert(result.end(), marshal_as<typename TTo::value_type>(element));
@@ -150,32 +155,31 @@ namespace marshal_fx {
 
 		// Specialization for marshaling a std::pair to a System::Collections::Generic::KeyValuePair.
 		template <typename TToKey, typename TToValue, typename TFromFirst, typename TFromSecond>
-		struct marshal_traits <
+		struct marshal_traits<
 			System::Collections::Generic::KeyValuePair<TToKey, TToValue>,
 			std::pair<TFromFirst, TFromSecond>
 		>
 		{
-			static System::Collections::Generic::KeyValuePair<TToKey, TToValue> marshal(
-				std::pair<TFromFirst, TFromSecond> const& from, fallback_tag, tag_base)
+			using KVP = System::Collections::Generic::KeyValuePair<TToKey, TToValue>;
+
+			static KVP marshal(std::pair<TFromFirst, TFromSecond> const& from, fallback_tag, tag_base)
 			{
-				return System::Collections::Generic::KeyValuePair<TToKey, TToValue>(
-					marshal_as<TToKey>(from.first),
-					marshal_as<TToValue>(from.second)
-					);
+				return KVP(marshal_as<TToKey>(from.first), marshal_as<TToValue>(from.second));
 			}
 		};
 
 		// Specialization for marshaling a System::Collections::Generic::KeyValuePair to a std::pair.
 		template <typename TToFirst, typename TToSecond, typename TFromKey, typename TFromValue>
-		struct marshal_traits <
+		struct marshal_traits<
 			std::pair<TToFirst, TToSecond>,
-			System::Collections::Generic::KeyValuePair < TFromKey, TFromValue >
+			System::Collections::Generic::KeyValuePair<TFromKey, TFromValue>
 		>
 		{
-			static std::pair<TToFirst, TToSecond> marshal(
-				System::Collections::Generic::KeyValuePair<TFromKey, TFromValue> const& from, fallback_tag, tag_base)
+			using KVP = System::Collections::Generic::KeyValuePair<TFromKey, TFromValue>;
+
+			static std::pair<TToFirst, TToSecond> marshal(KVP const& from, fallback_tag, tag_base)
 			{
-				auto& from_nonconst = const_cast<System::Collections::Generic::KeyValuePair<TFromKey, TFromValue>&>(from);
+				auto& from_nonconst = const_cast<KVP&>(from);
 				return std::pair<TToFirst, TToSecond>(
 					marshal_as<std::remove_cv_t<TToFirst>>(from_nonconst.Key),
 					marshal_as<std::remove_cv_t<TToSecond>>(from_nonconst.Value)
